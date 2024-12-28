@@ -164,7 +164,16 @@ trash_talk_white = [
     "You're going down!",
     "Watch and learn!",
     "You're no match for me!",
-    "This will be over soon."
+    "This will be over soon.",
+    "I hope you brought a snack because this is going to be a long day for you.",
+    "You're about as useful as a screen door on a submarine.",
+    "I'd explain it to you, but I left my English-to-Dingbat dictionary at home",
+    "You call that a move? My grandma can do better!",
+    "I'm not saying you're bad, but you make a great cautionary tale.",
+    "You're like a cloud. When you disappear, it's a beautiful day.",
+    "I'd agree with you, but then we'd both be wrong.",
+    "You're the reason God created the middle finger.",
+    "I'm not insulting you; I'm describing you."
 ]
 
 trash_talk_black = [
@@ -172,7 +181,16 @@ trash_talk_black = [
     "Better luck next time!",
     "I'm just getting started!",
     "You don't stand a chance!",
-    "Prepare to lose!"
+    "Prepare to lose!",
+    "I hope you brought a snack because this is going to be a long day for you.",
+    "You're about as useful as a screen door on a submarine.",
+    "I'd explain it to you, but I left my English-to-Dingbat dictionary at home",
+    "You call that a move? My grandma can do better!",
+    "I'm not saying you're bad, but you make a great cautionary tale.",
+    "You're like a cloud. When you disappear, it's a beautiful day.",
+    "I'd agree with you, but then we'd both be wrong.",
+    "You're the reason God created the middle finger.",
+    "I'm not insulting you; I'm describing you."
 ]
 
 # Text-to-speech function with different voices
