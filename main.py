@@ -5,13 +5,23 @@ import time
 import pyttsx3
 import random
 import os
+import requests
+import chess.engine
 
 # Initialize Pygame and pyttsx3
 pygame.init()
-engine = pyttsx3.init()
+tts_engine = pyttsx3.init()
+
+# Initialize Stockfish engine
+engine_path = "path/to/stockfish"  # Update this path to the location of your Stockfish executable
+try:
+    stockfish_engine = chess.engine.SimpleEngine.popen_uci(engine_path)
+except Exception as e:
+    print(f"Error initializing Stockfish engine: {e}")
+    stockfish_engine = None
 
 # Constants
-WIDTH, HEIGHT = 800, 1000  # Increased height to add space for the display below the board
+WIDTH, HEIGHT = 800, 1000
 SQUARE_SIZE = WIDTH // 8
 FPS = 60
 SCORE_FILE = "chess_scores.txt"
@@ -19,53 +29,62 @@ SCORE_FILE = "chess_scores.txt"
 # Colors
 WHITE = (255, 255, 255)
 BLACK = (0, 0, 0)
-GREEN = (0, 255, 0)
 BLUE = (0, 0, 255)
+LIGHT_GRAY = (211, 211, 211)
 
-# Load scores from the file
+# Initialize win counters for each player
+win_counters = {
+    "grok_move": {"white_wins": 0, "black_wins": 0, "vs": {}},
+    "chatgpt_move": {"white_wins": 0, "black_wins": 0, "vs": {}},
+    "get_user_move": {"white_wins": 0, "black_wins": 0, "vs": {}},
+    "stockfish_move": {"white_wins": 0, "black_wins": 0, "vs": {}},
+    "get_best_move_minimax": {"white_wins": 0, "black_wins": 0, "vs": {}},
+    "random_move": {"white_wins": 0, "black_wins": 0, "vs": {}}
+}
+
 def load_scores():
     if not os.path.exists(SCORE_FILE):
-        return 0, 0, 0  # Default scores if the file doesn't exist
+        return []
     with open(SCORE_FILE, "r") as file:
-        lines = file.readlines()
-        if len(lines) != 3:
-            return 0, 0, 0  # Default scores if the file is not formatted correctly
-        grok_wins = int(lines[0].strip())
-        chatgpt_wins = int(lines[1].strip())
-        draws = int(lines[2].strip())
-        return grok_wins, chatgpt_wins, draws
+        return [line.strip() for line in file.readlines()]
 
-# Save scores to the file
-def save_scores(grok_wins, chatgpt_wins, draws):
+def save_scores(scores):
     with open(SCORE_FILE, "w") as file:
-        file.write(f"{grok_wins}\n")
-        file.write(f"{chatgpt_wins}\n")
-        file.write(f"{draws}\n")
+        for score in scores:
+            file.write(score + "\n")
 
-# Load images
+def record_match(scores, white_player, black_player, winner, match_time, num_moves):
+    new_record = f"White Player: {white_player}, Black Player: {black_player}, Winner: {winner}, Match Time: {match_time:.2f} seconds, Number of Moves: {num_moves}"
+    scores.append(new_record)
+    save_scores(scores)
+    if winner == "White":
+        win_counters[white_player]["white_wins"] += 1
+        if black_player not in win_counters[white_player]["vs"]:
+            win_counters[white_player]["vs"][black_player] = {"wins": 0, "losses": 0}
+        win_counters[white_player]["vs"][black_player]["wins"] += 1
+    elif winner == "Black":
+        win_counters[black_player]["black_wins"] += 1
+        if white_player not in win_counters[black_player]["vs"]:
+            win_counters[black_player]["vs"][white_player] = {"wins": 0, "losses": 0}
+        win_counters[black_player]["vs"][white_player]["wins"] += 1
+
 def load_images():
     pieces = ['bK', 'bN', 'bB', 'bQ', 'bR', 'bP', 'wK', 'wN', 'wB', 'wQ', 'wR', 'wP']
-    images = {}
-    for piece in pieces:
-        images[piece] = pygame.transform.scale(pygame.image.load(f'images/{piece}.png'), (SQUARE_SIZE, SQUARE_SIZE))
-    return images
+    return {piece: pygame.transform.scale(pygame.image.load(f'images/{piece}.png'), (SQUARE_SIZE, SQUARE_SIZE)) for piece in pieces}
 
-# Draw the board
 def draw_board(screen):
     for row in range(8):
         for col in range(8):
             color = WHITE if (row + col) % 2 == 0 else BLACK
             pygame.draw.rect(screen, color, (col * SQUARE_SIZE, row * SQUARE_SIZE, SQUARE_SIZE, SQUARE_SIZE))
 
-# Draw pieces
 def draw_pieces(screen, board, images):
     for row in range(8):
         for col in range(8):
             piece = board[row][col]
-            if piece != '--':
+            if (piece != '--'):
                 screen.blit(images[piece], (col * SQUARE_SIZE, row * SQUARE_SIZE))
 
-# Convert Pygame board to python-chess board
 def pygame_to_chess_board(pygame_board):
     chess_board = chess.Board.empty()
     for row in range(8):
@@ -75,7 +94,6 @@ def pygame_to_chess_board(pygame_board):
                 chess_board.set_piece_at(chess.square(col, 7 - row), chess.Piece.from_symbol(piece[1].upper() if piece[0] == 'w' else piece[1].lower()))
     return chess_board
 
-# Convert python-chess board to Pygame board
 def chess_to_pygame_board(chess_board):
     pygame_board = [['--' for _ in range(8)] for _ in range(8)]
     for square in chess.SQUARES:
@@ -85,22 +103,9 @@ def chess_to_pygame_board(chess_board):
             pygame_board[7 - row][col] = ('w' if piece.color == chess.WHITE else 'b') + piece.symbol().upper()
     return pygame_board
 
-# Count the pieces of each color
-def count_pieces(board):
-    white_count = 0
-    black_count = 0
-    for piece in board.piece_map().values():
-        if piece.color == chess.WHITE:
-            white_count += 1
-        else:
-            black_count += 1
-    return white_count, black_count
-
-# Simple minimax AI with Alpha-Beta Pruning
 def minimax(board, depth, alpha, beta, maximizing_player):
     if depth == 0 or board.is_game_over():
         return evaluate_board(board)
-
     if maximizing_player:
         max_eval = float('-inf')
         for move in board.legal_moves:
@@ -125,26 +130,8 @@ def minimax(board, depth, alpha, beta, maximizing_player):
         return min_eval
 
 def evaluate_board(board):
-    white_count, black_count = count_pieces(board)
-    eval = 0
-    for piece in board.piece_map().values():
-        if (piece.color == chess.WHITE and white_count <= 2) or (piece.color == chess.BLACK and black_count <= 2):
-            # Shift focus away from the king if only two pieces of one color are left
-            if piece.piece_type == chess.KING:
-                continue
-        eval += piece_value(piece)
-    return eval
-
-def piece_value(piece):
-    values = {
-        chess.PAWN: 1,
-        chess.KNIGHT: 3,
-        chess.BISHOP: 3,
-        chess.ROOK: 5,
-        chess.QUEEN: 9,
-        chess.KING: 0
-    }
-    return values[piece.piece_type] if piece.color == chess.WHITE else -values[piece.piece_type]
+    piece_values = {chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3, chess.ROOK: 5, chess.QUEEN: 9, chess.KING: 0}
+    return sum(piece_values[piece.piece_type] if piece.color == chess.WHITE else -piece_values[piece.piece_type] for piece in board.piece_map().values())
 
 def get_best_move_minimax(board, depth):
     best_move = None
@@ -158,95 +145,264 @@ def get_best_move_minimax(board, depth):
             best_move = move
     return best_move
 
-# Trash-talking phrases
-trash_talk_white = [
-    "Is that the best you can do?",
-    "You're going down!",
-    "Watch and learn!",
-    "You're no match for me!",
-    "This will be over soon.",
-    "I hope you brought a snack because this is going to be a long day for you.",
-    "You're about as useful as a screen door on a submarine.",
-    "I'd explain it to you, but I left my English-to-Dingbat dictionary at home",
-    "You call that a move? My grandma can do better!",
-    "I'm not saying you're bad, but you make a great cautionary tale.",
-    "You're like a cloud. When you disappear, it's a beautiful day.",
-    "I'd agree with you, but then we'd both be wrong.",
-    "You're the reason God created the middle finger.",
-    "I'm not insulting you; I'm describing you."
-]
+def random_move(board, depth):
+    return random.choice(list(board.legal_moves))
 
-trash_talk_black = [
-    "You're making this too easy!",
-    "Better luck next time!",
-    "I'm just getting started!",
-    "You don't stand a chance!",
-    "Prepare to lose!",
-    "I hope you brought a snack because this is going to be a long day for you.",
-    "You're about as useful as a screen door on a submarine.",
-    "I'd explain it to you, but I left my English-to-Dingbat dictionary at home",
-    "You call that a move? My grandma can do better!",
-    "I'm not saying you're bad, but you make a great cautionary tale.",
-    "You're like a cloud. When you disappear, it's a beautiful day.",
-    "I'd agree with you, but then we'd both be wrong.",
-    "You're the reason God created the middle finger.",
-    "I'm not insulting you; I'm describing you."
-]
+def get_user_move(board, depth):
+    move = None
+    selected_square = None
+    while move not in board.legal_moves:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit()
+                sys.exit()
+            if event.type == pygame.MOUSEBUTTONDOWN:
+                pos = pygame.mouse.get_pos()
+                col = pos[0] // SQUARE_SIZE
+                row = pos[1] // SQUARE_SIZE
+                square = chess.square(col, 7 - row)
+                if selected_square is None:
+                    selected_square = square
+                else:
+                    move = chess.Move(selected_square, square)
+                    if board.is_legal(move):
+                        return move
+                    selected_square = None
+    return move
 
-# Text-to-speech function with different voices
-def speak(text, voice_id):
-    engine.setProperty('voice', voice_id)
-    engine.say(text)
-    engine.runAndWait()
+def stockfish_move(board, depth):
+    if stockfish_engine:
+        result = stockfish_engine.play(board, chess.engine.Limit(time=2.0))
+        return result.move
+    else:
+        print("Stockfish engine is not available.")
+        return random_move(board, depth)
 
-# Display the winner and AI names
-def display_winner(screen, winner, ai_white, ai_black, grok_wins, chatgpt_wins, draws):
+def grok_move(board, depth, url, headers=None):
+    headers = headers or {"Content-Type": "application/json"}
+    data = {"fen": board.fen(), "depth": depth}
+    try:
+        response = requests.post(url, headers=headers, json=data)
+        response.raise_for_status()
+        move_uci = response.json().get("best_move")
+        if move_uci:
+            return chess.Move.from_uci(move_uci)
+    except requests.RequestException as e:
+        print(f"Error fetching move from Grok: {e}")
+    return random_move(board, depth)
+
+def chatgpt_move(board, depth, headers):
+    url = "https://api.openai.com/v1/chat/completions"
+    data = {
+        "model": "gpt-3.5-turbo",
+        "messages": [
+            {"role": "system", "content": "You are a chess engine."},
+            {"role": "user", "content": f"Given the FEN {board.fen()}, what is the best move?"}
+        ],
+        "max_tokens": 50
+    }
+    try:
+        response = requests.post(url, headers=headers, json=data)
+        response.raise_for_status()
+        move_uci = response.json().get("choices")[0]["message"]["content"].strip()
+        return chess.Move.from_uci(move_uci)
+    except requests.RequestException as e:
+        print(f"Error fetching move from ChatGPT: {e}")
+    return random_move(board, depth)
+
+def load_trash_talk():
+    trash_talk_white, trash_talk_black = [], []
+    if os.path.exists("trash_talk.txt"):
+        with open("trash_talk.txt", "r") as file:
+            for line in file:
+                if line.startswith("white:"):
+                    trash_talk_white.append(line.replace("white:", "").strip())
+                elif line.startswith("black:"):
+                    trash_talk_black.append(line.replace("black:", "").strip())
+    return trash_talk_white, trash_talk_black
+
+def speak(text, voice_id, delay=0):
+    tts_engine.setProperty('voice', voice_id)
+    time.sleep(delay)
+    tts_engine.say(text)
+    tts_engine.runAndWait()
+
+def display_winner(screen, winner, white_wins, black_wins, draws):
     font = pygame.font.SysFont(None, 36)
-    ai_info_white = f"White (GROK): {ai_white.__name__}"
-    ai_info_black = f"Black (ChatGPT): {ai_black.__name__}"
-    score_info = f"GROK Wins: {grok_wins} | ChatGPT Wins: {chatgpt_wins} | Draws: {draws}"
     text_winner = font.render(winner, True, BLUE)
-    text_white = font.render(ai_info_white, True, BLUE)
-    text_black = font.render(ai_info_black, True, BLUE)
-    text_score = font.render(score_info, True, BLUE)
-    screen.fill(WHITE, (0, 800, WIDTH, 200))  # Clear the area below the board
-    screen.blit(text_white, (10, 810))
-    screen.blit(text_black, (10, 840))
+    screen.fill(WHITE, (0, 800, WIDTH, 200))
     screen.blit(text_winner, (10, 870))
-    screen.blit(text_score, (10, 900))
     pygame.display.flip()
-    time.sleep(30)  # Display the winner for 30 seconds
+    time.sleep(30)
     pygame.quit()
     sys.exit()
 
-# Display AI names and scores below the board during the game
-def display_ai_names(screen, ai_white, ai_black, grok_wins, chatgpt_wins, draws):
-    font = pygame.font.SysFont(None, 36)
-    ai_info_white = f"White (GROK): {ai_white.__name__}"
-    ai_info_black = f"Black (ChatGPT): {ai_black.__name__}"
-    score_info = f"GROK Wins: {grok_wins} | ChatGPT Wins: {chatgpt_wins} | Draws: {draws}"
-    screen.fill(WHITE, (0, 800, WIDTH, 200))  # Clear the area below the board
-    text_white = font.render(ai_info_white, True, BLUE)
-    text_black = font.render(ai_info_black, True, BLUE)
-    text_score = font.render(score_info, True, BLUE)
-    screen.blit(text_white, (10, 810))
-    screen.blit(text_black, (10, 840))
-    screen.blit(text_score, (10, 870))
+def display_scores(screen, scores):
+    screen.fill(BLACK, (0, 800, WIDTH, 200))  # Fill the area under the game board with black
     pygame.display.flip()
 
-# Main function
+def input_box(screen, prompt, width=200):
+    font = pygame.font.SysFont(None, 36)
+    input_box = pygame.Rect(10, 250, width, 30)  # Adjusted width for the input box
+    color_inactive = pygame.Color('lightskyblue3')
+    color_active = pygame.Color('dodgerblue2')
+    color = color_inactive
+    active = False
+    text = ''
+    done = False
+
+    while not done:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit()
+                sys.exit()
+            if event.type == pygame.MOUSEBUTTONDOWN:
+                if input_box.collidepoint(event.pos):
+                    active = not active
+                else:
+                    active = False
+                color = color_active if active else color_inactive
+            if event.type == pygame.KEYDOWN:
+                if active:
+                    if event.key == pygame.K_RETURN:
+                        done = True
+                    elif event.key == pygame.K_BACKSPACE:
+                        text = text[:-1]
+                    elif event.key == pygame.K_v and (pygame.key.get_mods() & pygame.KMOD_CTRL):
+                        text += pygame.scrap.get(pygame.SCRAP_TEXT).decode('utf-8')
+                    else:
+                        text += event.unicode
+
+        screen.fill(WHITE)
+        prompt_surface = font.render(prompt, True, BLUE)
+        screen.blit(prompt_surface, (10, 150))
+        txt_surface = font.render(text, True, color)
+        width = max(width, txt_surface.get_width() + 10)
+        input_box.w = width
+        screen.blit(txt_surface, (input_box.x + 5, input_box.y + 5))
+        pygame.draw.rect(screen, color, input_box, 2)
+        pygame.display.flip()
+
+    return text
+
+def select_ai_methods(screen):
+    font = pygame.font.Font(None, 36)
+    large_font = pygame.font.Font(None, 72)  # Large font for "AI Chess"
+    mythic_font = pygame.font.Font(None, 100)  # Mythic font for "AI Chess"
+    options = ["Grok", "ChatGPT", "Zenkay", "Stockfish", "Quantum", "Example", "User Move", "Minimax", "Random Move", "Custom URL"]
+    ai_methods = [grok_move, chatgpt_move, grok_move, stockfish_move, grok_move, grok_move, get_user_move, get_best_move_minimax, random_move, grok_move]
+    urls = {
+        "Grok": "https://x.com/i/grok?focus=1",
+        "ChatGPT": "https://api.openai.com/v1/chat/completions",
+        "Quantum": "https://quantumai.google/cirq/experiments/unitary/quantum_chess/quantum_chess_rest_api",
+        "Example": "https://www.chess.com/callback/board/game",
+        "Zenkay": "https://py-chess-api.zenkay.dev/move"
+    }
+
+    background_image = pygame.image.load("chess.jpg")  # Load the background image
+    background_image = pygame.transform.scale(background_image, (WIDTH, HEIGHT))
+
+    def draw_options():
+        screen.blit(background_image, (0, 0))  # Draw the background image
+        ai_chess_text = mythic_font.render("AI Chess", True, LIGHT_GRAY)
+        screen.blit(ai_chess_text, (WIDTH // 2 - ai_chess_text.get_width() // 2, 50))  # Center the "AI Chess" text
+
+        # Draw the AI options
+        box_width = max(font.size(option)[0] for option in options) + 20
+        box_height = font.get_height() + 10
+        box_y = 200
+        box_padding = 10
+        boxes = []
+        
+        for i, option in enumerate(options):
+            box_x = (i % 2) * (box_width + box_padding) + (WIDTH - 2 * box_width - box_padding) // 2
+            if i % 2 == 0 and i > 0:
+                box_y += box_height + box_padding
+            box_rect = pygame.Rect(box_x, box_y, box_width, box_height)
+            boxes.append(box_rect)
+            pygame.draw.rect(screen, BLACK, box_rect)
+            text = font.render(option, True, LIGHT_GRAY)
+            screen.blit(text, (box_x + 10, box_y + 5))
+        
+        instructions = [
+            "Instructions:",
+            "1. Select AI method for White by clicking or pressing a number key.",
+            "2. Select AI method for Black by clicking or pressing a number key.",
+            "3. If 'Custom URL' is selected, enter the URL when prompted."
+        ]
+        
+        for i, line in enumerate(instructions):
+            text = font.render(line, True, WHITE)
+            screen.blit(text, (10, HEIGHT - (len(instructions) - i) * 30))
+
+        pygame.display.flip()
+        return boxes
+
+    def get_choice(boxes):
+        while True:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    pygame.quit()
+                    sys.exit()
+                if event.type == pygame.MOUSEBUTTONDOWN:
+                    for i, box in enumerate(boxes):
+                        if box.collidepoint(event.pos):
+                            return ai_methods[i], options[i]
+                if event.type == pygame.KEYDOWN:
+                    if event.key in [pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4, pygame.K_5, pygame.K_6, pygame.K_7, pygame.K_8, pygame.K_9, pygame.K_0]:
+                        return ai_methods[event.key - pygame.K_1], options[event.key - pygame.K_1]
+
+    screen.fill(WHITE)
+    text = font.render("Select AI method for White:", True, BLUE)
+    screen.blit(text, (10, 10))
+    boxes = draw_options()
+    white_choice, white_option = get_choice(boxes)
+
+    if white_option == "Custom URL":
+        custom_url_white = input_box(screen, "Enter URL for White AI:", width=400)
+        openai_api_key = input_box(screen, "Enter API Key for White AI:", width=400)
+        headers_white = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {openai_api_key}"
+        }
+        print(f"Selected White AI: {white_option}, URL: {custom_url_white}")
+    else:
+        custom_url_white = urls.get(white_option, None)
+        headers_white = None
+
+    screen.fill(WHITE)
+    text = font.render("Select AI method for Black:", True, BLUE)
+    screen.blit(text, (10, 10))
+    boxes = draw_options()
+    black_choice, black_option = get_choice(boxes)
+
+    if black_option == "Custom URL":
+        custom_url_black = input_box(screen, "Enter URL for Black AI:", width=400)
+        openai_api_key = input_box(screen, "Enter API Key for Black AI:", width=400)
+        headers_black = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {openai_api_key}"
+        }
+        print(f"Selected Black AI: {black_option}, URL: {custom_url_black}")
+    else:
+        custom_url_black = urls.get(black_option, None)
+        headers_black = None
+
+    return white_choice, black_choice, custom_url_white, custom_url_black, headers_white, headers_black
+
 def main():
-    global grok_wins, chatgpt_wins, draws
+    global win_counters
 
-    # Load the scores from the file
-    grok_wins, chatgpt_wins, draws = load_scores()
-
+    scores = load_scores()
     screen = pygame.display.set_mode((WIDTH, HEIGHT))
     pygame.display.set_caption("Chess Game")
     clock = pygame.time.Clock()
     images = load_images()
 
-    # Initial board setup
+    background_image = pygame.image.load("chess.jpg")  # Load the background image from root
+    background_image = pygame.transform.scale(background_image, (WIDTH, HEIGHT))
+    background_image.set_alpha(128)  # Set image transparency to 50%
+
     board = [
         ['bR', 'bN', 'bB', 'bQ', 'bK', 'bB', 'bN', 'bR'],
         ['bP', 'bP', 'bP', 'bP', 'bP', 'bP', 'bP', 'bP'],
@@ -259,83 +415,73 @@ def main():
     ]
 
     chess_board = pygame_to_chess_board(board)
-    turn = 'w'  # White starts
+    turn = 'w'
+    move_count = 0
+    next_trash_talk = random.randint(1, 5)
+    trash_talk_white, trash_talk_black = load_trash_talk()
+    ai_white, ai_black, custom_url_white, custom_url_black, headers_white, headers_black = select_ai_methods(screen)
+    voices = tts_engine.getProperty('voices')
+    white_voice_id = voices[0].id
+    black_voice_id = voices[1].id
 
-    move_count = 0  # Counter to track the number of moves
+    
+    screen.blit(background_image, (0, 0)) # Draw the background image with 50% visibility
 
-    # AI functions for white (GROK) and black (ChatGPT)
-    ai_white = get_best_move_minimax  # Using minimax for GROK
-    ai_black = get_best_move_minimax  # Using minimax for ChatGPT
-
-    # Set different voices for each AI
-    voices = engine.getProperty('voices')
-    white_voice_id = voices[0].id  # Use the first available voice for white
-    black_voice_id = voices[1].id  # Use the second available voice for black
-
-    # Initial display of the board and AI names
     draw_board(screen)
     draw_pieces(screen, board, images)
-    display_ai_names(screen, ai_white, ai_black, grok_wins, chatgpt_wins, draws)
+    screen.blit(background_image, (0, 800))  # Draw the background image behind the display at the bottom
     pygame.display.flip()
-
-    # Initial delay before the first move
     time.sleep(5)
 
-    # Game loop
+    start_time = time.time()
+
     while not chess_board.is_game_over():
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 pygame.quit()
                 sys.exit()
 
-        # AI move for white (GROK)
         if turn == 'w' and ai_white:
-            move = ai_white(chess_board, 3)
+            move = grok_move(chess_board, 3, custom_url_white, headers_white) if custom_url_white else ai_white(chess_board, 3)
             if move:
                 chess_board.push(move)
                 board = chess_to_pygame_board(chess_board)
                 turn = 'b'
                 move_count += 1
-                if move_count > 4:  # Only start trash-talking after the first 4 moves
-                    speak(random.choice(trash_talk_white), white_voice_id)  # White AI trash talk
-            time.sleep(1)  # Delay for human viewing
+                if move_count >= next_trash_talk:
+                    speak(random.choice(trash_talk_white), white_voice_id, delay=0.5)
+                    next_trash_talk += random.randint(1, 5)
+            time.sleep(1)
 
-        # AI move for black (ChatGPT)
         if turn == 'b' and ai_black:
-            move = ai_black(chess_board, 3)
+            move = grok_move(chess_board, 3, custom_url_black, headers_black) if custom_url_black else ai_black(chess_board, 3)
             if move:
                 chess_board.push(move)
                 board = chess_to_pygame_board(chess_board)
                 turn = 'w'
                 move_count += 1
-                if move_count > 4:  # Only start trash-talking after the first 4 moves
-                    speak(random.choice(trash_talk_black), black_voice_id)  # Black AI trash talk
-            time.sleep(1)  # Delay for human viewing
+                if move_count >= next_trash_talk:
+                    speak(random.choice(trash_talk_black), black_voice_id, delay=0.5)
+                    next_trash_talk += random.randint(1, 5)
+            time.sleep(1)
 
         draw_board(screen)
         draw_pieces(screen, board, images)
+        screen.blit(background_image, (0, 800))  # Draw the background image behind the display at the bottom
         pygame.display.flip()
         clock.tick(FPS)
 
-    # Determine the outcome and update the scores
+    match_time = time.time() - start_time
+
     if chess_board.is_checkmate():
-        if chess_board.turn == chess.BLACK:
-            winner = "GROK Wins!"
-            grok_wins += 1
-        else:
-            winner = "ChatGPT Wins!"
-            chatgpt_wins += 1
+        winner = "White" if chess_board.turn == chess.BLACK else "Black"
     elif chess_board.is_stalemate() or chess_board.is_insufficient_material() or chess_board.is_seventyfive_moves() or chess_board.is_variant_draw():
-        winner = "Draw!"
-        draws += 1
+        winner = "Draw"
     else:
-        winner = "Game Over!"
+        winner = "Game Over"
 
-    # Save the updated scores to the file
-    save_scores(grok_wins, chatgpt_wins, draws)
-
-    # Display the winner and updated scores
-    display_winner(screen, winner, ai_white, ai_black, grok_wins, chatgpt_wins, draws)
+    record_match(scores, ai_white.__name__, ai_black.__name__, winner, match_time, move_count)
+    display_winner(screen, winner, win_counters[ai_white.__name__]["white_wins"], win_counters[ai_black.__name__]["black_wins"], 0)
 
 if __name__ == "__main__":
     main()
